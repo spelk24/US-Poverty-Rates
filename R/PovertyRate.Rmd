@@ -1,0 +1,299 @@
+---
+title: "United States Poverty Rates"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+2020 has given me a lot more free-time than I'm used to. I've been trying to use that time for personal development, learning, and reading. The two best things I've done so far are (1) read [*The Color of Law by Richard Rothstein*](https://www.epi.org/publication/the-color-of-law-a-forgotten-history-of-how-our-government-segregated-america/) and (2) read [*Evicted by Matthew Desmond*](https://www.evictedbook.com/). Both books have been eye opening to the gruesome realities of the history of the United States. One was focused primarily on housing segregation, and the unethical actions that government officials took in the 20th century to ensure the separation and oppression of black people. The other book is about real poverty in America, specifically in Milwaukee, WI. The author documents the lives of poor families that struggle to survive in a broken system, where most decisions are made out of desperation to keep a roof over their head. 
+
+In different ways, each book inspired me to want to look at some data around racial inequality and poverty. I decided to look at some US Census data from the [American Community Survey (ACS)](https://www.census.gov/programs-surveys/acs), specifically focusing on poverty rates by race in US counties. Some of the numbers are mind-blowing and sad. In hopes to inspire more people to care about these issues, I tried to build some visualizations that represent the problems millions of people face.
+
+# Libraries
+
+```{r message = FALSE}
+library(censusapi)
+library(tidyverse)
+library(readr)
+library(ggtext)
+library(ggalt)
+library(readxl)
+```
+
+
+```{r message=FALSE}
+#API Key
+key <- "c10f6f03fff09415aedf0bc2f6f6729a78b1ea29"
+# Add key to .Renviron
+Sys.setenv(CENSUS_KEY=key)
+# Reload .Renviron
+readRenviron("~/.Renviron")
+apis <- listCensusApis()
+```
+
+# Census API using {censusapi}
+
+Resource to get started: https://cran.r-project.org/web/packages/censusapi/vignettes/getting-started.html
+
+```{r}
+apis <- listCensusApis()
+census_vars <- listCensusMetadata(name = "2018/acs/acs5/subject")
+```
+
+```{r}
+# Variables needed in API pull
+percent_poverty <- filter(census_vars,
+                       grepl("Estimate!!Percent below poverty level!!Population for whom poverty status is determined!!RACE",label)) # poverty rates
+total_poverty <- filter(census_vars,
+                       grepl("Estimate!!Below poverty level!!Population for whom poverty status is determined!!RACE",label)) # total numbers
+total_population <- census_vars %>% filter(name == "S1701_C01_001E") # needed for county population filter
+```
+
+
+```{r message = FALSE}
+# empty dataframe to store and append each year
+poverty_all <- tibble()
+all_variables <- c(percent_poverty$name,total_poverty$name,total_population$name)
+all_variables_label <- c(percent_poverty$label,total_poverty$label,total_population$label)
+names(poverty_all) <- c("State_CDE","County_CDE",all_variables,"Year")
+
+# Loop through each year to do separate API calls
+for (y in 2012:2018) {
+  # API request
+  new_data <- getCensus(name = paste0(as.character(y),"/acs/acs5/subject"),
+          vars = c(all_variables),
+          region = "county:*")
+  # change column names
+  names(new_data) <- c("State_CDE","County_CDE",all_variables_label)
+  # filter to WI and select relevant columns
+  poverty_year <- new_data %>% 
+    mutate(Year = as.character(y))
+  # append to poverty_all
+  poverty_all <- bind_rows(poverty_all, poverty_year)
+}
+```
+
+### Add County Names
+Reference: State and County codes: https://www.census.gov/prod/techdoc/cbp/cbp95/st-cnty.pdf
+
+```{r}
+county_lookups <- read_excel("county_codes.xlsx")
+poverty_all <- left_join(poverty_all,county_lookups,by = c("State_CDE" = "State_CDE","County_CDE"="County_CDE"))
+poverty_pivot_long <- pivot_longer(poverty_all,cols = starts_with("Estimate!!"),
+                              names_to = "Category",values_to = "Value") %>% 
+  mutate(Type = case_when(
+    grepl("Estimate!!Percent",Category) ~ "Rate",
+    grepl("Estimate!!Below",Category) ~ "Number",
+    grepl("Estimate!!Total",Category) ~ "Population",
+    TRUE ~ as.character(Category)
+  ))
+```
+
+
+```{r}
+# Counties with > 10k population
+counties <- poverty_all %>% 
+  filter(`Estimate!!Total!!Population for whom poverty status is determined` >= 10000) %>% 
+  pull(County_CDE)
+
+# hist data
+chart_data <- poverty_pivot_long %>% 
+  filter(County_CDE %in% counties,
+         Type == "Rate") %>% 
+  separate(Category, c("Description","Race"),sep = "ORIGIN!!") %>% 
+  select(-Description)
+```
+
+
+# (1) Comparing White & Black Poverty Rates
+
+Need to add in population to the data --> limit county population for this granualarity
+
+```{r}
+counties_2018 <- chart_data %>% filter(Year == "2018",
+                                       Value > 0,
+                                      Value < 100,
+                                       Race %in% c("White alone, not Hispanic or Latino","Black or African American alone"))
+ggplot(data = counties_2018, aes(x = Value, fill = Race)) +
+    geom_histogram(color="white",
+                   alpha=0.8,
+                   binwidth = 1,
+                   position = "identity",
+                   show.legend = FALSE) +
+    scale_fill_manual(values=c("#112E51","#ef6548")) +
+    scale_y_continuous(expand = c(0,0)) +
+  geom_label(aes(x = 36, y = 180, label = "Milwaukee County"), 
+             hjust = 0, 
+             vjust = 0.5, 
+             lineheight = 0.8,
+             colour = "#252525",
+             fill = "#f0f0f0",
+             label.size = NA,
+             size = 4) +
+  geom_curve(aes(x = 35, y = 175, xend = 34, yend = 70), 
+                             colour = "#112E51", 
+                             size=0.05, 
+                             curvature = 0.2,
+                             arrow = arrow(length = unit(0.03, "npc"))) +
+  geom_curve(aes(x = 35, y = 175, xend = 11, yend = 130), 
+                             colour = "#ef6548", 
+                             size=0.05, 
+                             curvature = 0.2,
+                             arrow = arrow(length = unit(0.03, "npc"))) +
+    labs(x = "Poverty Rate (%)",
+         y = "",
+         fill = "",
+         title = "<p style='color:#252525'>Poverty Rates for <b style='color:#112E51'>Black people</b> are signifantly higher than for<b style='color:#ef6548'> White people</b></p>",
+         subtitle = "2018 U.S. Counties with more than 10,000 people",
+         caption = "Data: 2018 American Community Survery: US Census Bureau | Author: Stephen Pelkofer | @spelk24") +
+    theme(panel.background = element_rect(color = "white",fill = "white"),
+          panel.grid.major.y = element_line(color = "#252525",size = .1),
+          plot.title = element_markdown(),
+          plot.subtitle = element_markdown(size = 9),
+          plot.caption = element_markdown(size = 8),
+          axis.text = element_text(color = "#252525"),
+          axis.ticks = element_line(color = "#252525",size = .1),
+          axis.line.x = element_line(color = "#252525",size = .1))
+```
+
+This first chart shows the distribution of 2018 poverty rates for white people and black people in US counties with more than 10,000 people. It's very easy to see that the distributions are different. The median for white poverty rates is around 15%, while it's closer to 27% for black people. That is a remarkable difference, but one that is explained in great detail in *The Color of Law*. After decades of black people being denied to live in suburbs with well-funded education systems, generations of white people have had a much easier path to gaining and sustaining wealth. I specifically call out Milwaukee County in this chart, because the gap between black and white poverty rate is so large (23.7%!).
+
+
+# (2) Barbell Chart for large poverty gaps between white and black people
+
+```{r}
+# poverty gap data
+poverty_gaps <- poverty_all %>% 
+  filter(Year == "2018",
+         `Estimate!!Total!!Population for whom poverty status is determined` >= 1500000) %>% 
+  select(State_CDE, County_CDE, County = County_NME,
+         Population = `Estimate!!Total!!Population for whom poverty status is determined`,
+        `White Poverty Rate`=`Estimate!!Percent below poverty level!!Population for whom poverty status is determined!!RACE AND HISPANIC OR LATINO ORIGIN!!White alone, not Hispanic or Latino`,
+         `Black Poverty Rate`=`Estimate!!Percent below poverty level!!Population for whom poverty status is determined!!RACE AND HISPANIC OR LATINO ORIGIN!!Black or African American alone`
+         ) %>% 
+  mutate(`Poverty Gap` = `Black Poverty Rate` - `White Poverty Rate`) %>% 
+  arrange(desc(Population)) %>% 
+  head(20)
+```
+
+
+```{r}
+ggplot(data = poverty_gaps, aes(x = `White Poverty Rate`, xend = `Black Poverty Rate`,
+                                y = reorder(County,`Poverty Gap`), group = County)) +
+  geom_dumbbell(colour="#252525", size=.4,
+                size_x = 1.5,
+                size_xend = 1.5,
+                colour_x = "#ef6548",
+                colour_xend="#112E51", 
+                dot_guide=FALSE, dot_guide_size=0.15) +
+  labs(x = "Poverty Rate (%)",
+         y = "",
+         fill = "",
+         title = "<p style='color:#252525'>2018 Poverty Rate Gap for the 20 largest counties in the US</p>",
+         subtitle = "<p style='color:#252525'><b style='color:#112E51'>Black Poverty Rate</b> vs<b style='color:#ef6548'> White Poverty Rate</b></p>",
+         caption = "Data: 2018 American Community Survey: US Census Bureau | Author: Stephen Pelkofer | @spelk24") +
+  theme(panel.background = element_rect(color = "white",fill = "white"),
+          panel.grid.major.x = element_line(color = "#252525",size = .05),
+          plot.title = element_markdown(),
+          plot.subtitle = element_markdown(size = 9),
+          plot.caption = element_markdown(size = 8),
+          axis.text = element_text(color = "#252525"),
+          axis.ticks = element_line(color = "#252525",size = .1),
+          axis.line.x = element_line(color = "#252525",size = .1))
+```
+
+If we look at the black-white poverty gap in the 20 largest US counties, the minimum gap is 3.1% (Kings County) and the maximum is 19.3% (Wayne County, MI). The black poverty rate of 33.7% in Wayne County (Michigan) represents almost 230,000 people that live below the poverty line.
+
+
+# (3) and (4)  Poverty Rate by County & Race - WI Examples
+
+WI = 55
+Milwaukee = 079
+
+I was also particularly interested in looking at the poverty rates in Wisconsin's two biggest counties. It's nationally know that Milwaukee is one of the [most segregated cities in the US](https://www.governing.com/topics/politics/gov-milwaukee-most-segregated-polarized-place.html). In both Milwaukee County and Dane County in 2018, the black-white poverty gap was larger than **all** of the top 20 counties in the country.
+
+
+```{r}
+ggplot(data = chart_data %>% filter(Race %in% c("Black or African American alone",
+                                                   "White alone, not Hispanic or Latino"),
+                                    County_CDE == "079",
+                                    State_CDE == "55"),
+       aes(x = Year,
+           y = Value,
+           color = Race,
+           group = Race)) +
+  geom_point(show.legend = FALSE) +
+  geom_line(show.legend = FALSE) +
+  scale_color_manual(values=c("#112E51","#ef6548")) +
+  scale_y_continuous(breaks = c(0,10,20,30,40),limits = c(0,45),expand = c(0,0)) +
+  geom_label(aes(x = "2017", y = 23, label = "23.7% Gap"), 
+             hjust = 0, 
+             vjust = 0.5, 
+             lineheight = 0.8,
+             colour = "#252525",
+             fill = "#f0f0f0",
+             label.size = NA,
+             size = 4) +
+  geom_curve(aes(x = "2018", y = 10.5,xend = "2018", yend = 33.9),
+             colour = "#252525",
+             size=0.05,
+             curvature = 0,
+             linetype = "dashed") +
+      labs(y = "Poverty Rate (%)",
+         x = "",
+         fill = "",
+         title = "<p style='color:#252525'>Milwaukee County Poverty Rate Gap between <b style='color:#112E51'>Black people</b> and<b style='color:#ef6548'> White people</b></p>",
+         caption = "Data: 2012-2018 American Community Surveys: US Census Bureau | Author: Stephen Pelkofer | @spelk24") +
+    theme(panel.background = element_rect(color = "white",fill = "white"),
+          panel.grid.major.y = element_line(color = "#252525",size = .05),
+          plot.title = element_markdown(),
+          plot.subtitle = element_markdown(size = 9),
+          plot.caption = element_markdown(size = 8),
+          axis.text = element_text(color = "#252525"),
+          axis.ticks = element_line(color = "#252525",size = .1),
+          axis.line.x = element_line(color = "#252525",size = .1))
+```
+
+```{r}
+ggplot(data = chart_data %>% filter(Race %in% c("Black or African American alone",
+                                                   "White alone, not Hispanic or Latino"),
+                                    County_CDE == "025",
+                                    State_CDE == "55"),
+       aes(x = Year,
+           y = Value,
+           color = Race,
+           group = Race)) +
+  geom_point(show.legend = FALSE) +
+  geom_line(show.legend = FALSE) +
+  scale_color_manual(values=c("#112E51","#ef6548")) +
+  scale_y_continuous(breaks = c(0,10,20,30,40),limits = c(0,45),expand = c(0,0)) +
+  geom_label(aes(x = "2017", y = 20, label = "19.4% Gap"), 
+             hjust = 0, 
+             vjust = 0.5, 
+             lineheight = 0.8,
+             colour = "#252525",
+             fill = "#f0f0f0",
+             label.size = NA,
+             size = 4) +
+  geom_curve(aes(x = "2018", y = 9.1,xend = "2018", yend = 28.5),
+             colour = "#252525",
+             size=0.05,
+             curvature = 0,
+             linetype = "dashed") +
+      labs(y = "Poverty Rate (%)",
+         x = "",
+         fill = "",
+         title = "<p style='color:#252525'>Dane County Poverty Rate Gap between <b style='color:#112E51'>Black people</b> and<b style='color:#ef6548'> White people</b></p>",
+         caption = "Data: 2012-2018 American Community Surveys: US Census Bureau | Author: Stephen Pelkofer | @spelk24") +
+    theme(panel.background = element_rect(color = "white",fill = "white"),
+          panel.grid.major.y = element_line(color = "#252525",size = .05),
+          plot.title = element_markdown(),
+          plot.subtitle = element_markdown(size = 9),
+          plot.caption = element_markdown(size = 8),
+          axis.text = element_text(color = "#252525"),
+          axis.ticks = element_line(color = "#252525",size = .1),
+          axis.line.x = element_line(color = "#252525",size = .1))
+```
